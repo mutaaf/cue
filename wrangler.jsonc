@@ -1,0 +1,22 @@
+// Cue: the event backbone. See docs/ARCHITECTURE.md.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cue",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-10-01",
+  "routes": [{ "pattern": "mutaafaziz.com/cue*", "zone_name": "mutaafaziz.com" }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "d1_databases": [{ "binding": "DB", "database_name": "cue", "database_id": "8fcdc771-81db-4d8c-bfa1-f2485ecfab55", "migrations_dir": "migrations" }],
+  "queues": {
+    "producers": [{ "binding": "EVENTS", "queue": "cue-events" }],
+    "consumers": [
+      { "queue": "cue-events", "max_batch_size": 20, "max_batch_timeout": 5, "max_retries": 3, "dead_letter_queue": "cue-dead" },
+      { "queue": "cue-dead", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 3 }
+    ]
+  },
+  "send_email": [{ "name": "MAIL", "destination_address": "mutaaf.aziz@gmail.com" }],
+  "vars": { "MAIL_FROM": "cue@mutaafaziz.com", "ALERT_TO": "mutaaf.aziz@gmail.com" },
+  "triggers": { "crons": ["7 * * * *"] }
+}

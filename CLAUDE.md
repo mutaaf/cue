@@ -1,0 +1,11 @@
+Read [AGENTS.md](AGENTS.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first.
+
+## Environment nuances
+
+| Nuance | What to do |
+|---|---|
+| Tokens: `~/.config/cue/tokens` on the owner's Mac holds plaintext (mode 600). The Worker secret `TOKENS` holds only sha-256 hash to source | Add a producer: `sh scripts/add-token.sh <source>`. Never print a token |
+| Queue retention is fixed at 24 hours on the free plan | D1 is the durable log, not the queue |
+| `send_email` only reaches a verified Email Routing address | The owner's Gmail is verified. A new address needs verifying in the dashboard |
+| zsh doesn't word-split a variable holding a command | Use a function, not `W="npx wrangler"` |
+| `wrangler d1 migrations apply --remote` asks for confirmation and, piped through grep, silently applied nothing on the first deploy, so every write threw 1101 | `npm run deploy` pipes `yes` in and ends with a health check |
