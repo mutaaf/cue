@@ -16,6 +16,9 @@ async function sendAlert(subject, body, env) {
 
 const SUBSCRIBERS = [
   { name: 'alert-email', wants: (e) => e.priority === 'critical', run: (e, env) => { const d = describe(e); return sendAlert(d.subject, d.body, env); } },
+  // Stage Manager has no cron of its own: the clock reaches it as an event. It throws when Apple refuses,
+  // so a revoked key is retried, dead-lettered and emailed.
+  { name: 'stage-manager', wants: (e) => e.type === 'cue.clock.hourly', run: (e, env) => env.STAGE?.tick() },
   { name: 'retention', wants: (e) => e.type === 'cue.clock.hourly' && e.data.hour === '04', run: (e, env) => retain(env) },
 ];
 

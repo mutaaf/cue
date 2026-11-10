@@ -19,3 +19,4 @@ test('words that only contain those letters are fine in a contract', () => asser
 test('oversized data is refused', () => assert.match(validate({ type: 'ops.test.ping', data: { note: 'x'.repeat(5000) } }, 'any').why, /over/));
 test('a bad id is refused', () => assert.match(validate({ type: 'ops.test.ping', id: 'a b', data: { note: 'x' } }, 'any').why, /id must/));
 test('no contract has a personal field', () => { for (const [t, c] of Object.entries(CONTRACTS)) for (const k of Object.keys(c.data)) assert.equal(/(^|_)(ip|email|user|initials|phone)($|_)/i.test(k), false, `${t}.${k}`); });
+test('stage-manager may report review changes, cold-gas may not', () => { assert.equal(validate(ok, 'stage-manager').ok, true); assert.equal(validate(ok, 'cold-gas').ok, false); });

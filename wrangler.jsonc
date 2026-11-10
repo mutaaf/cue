@@ -16,6 +16,7 @@
       { "queue": "cue-dead", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 3 }
     ]
   },
+  "services": [{ "binding": "STAGE", "service": "stage-manager" }],
   "send_email": [{ "name": "MAIL", "destination_address": "mutaaf.aziz@gmail.com" }],
   "vars": { "MAIL_FROM": "cue@mutaafaziz.com", "ALERT_TO": "mutaaf.aziz@gmail.com" },
   "triggers": { "crons": ["7 * * * *"] }

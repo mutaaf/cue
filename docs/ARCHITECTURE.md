@@ -24,7 +24,7 @@ So this is **not** one microservice per feature. Splitting game scoring would ad
 | 1 | **Cue**, the event bus | Everything is polling; no project can react to another | Live |
 | 2 | **Prompter**, one AI gateway and neuron budget | 5 copies of provider code, and per-Worker caps totalling far over the shared 10,000 neurons a day. Models have already failed in production on this | Next |
 | 3 | **Cast List**, one app catalog | 5 lists that have already drifted | Planned |
-| 4 | **Stage Manager**, release and review tracking | App Store Connect tooling copied across 4+ repos | Planned: needs a decision about the Apple key leaving the Mac |
+| 4 | **Stage Manager**, release and review tracking | App Store Connect tooling copied across 4+ repos | Live (2026-11-10): github.com/mutaaf/stage-manager. Owner approved the key leaving the Mac; it uses its own read-only key, separate from Lobby's. Woken by `cue.clock.hourly`, no cron |
 | 5 | Shared operator auth, obs ingest | Copies multiplying | Planned |
 
 ## Left alone on purpose
@@ -41,7 +41,7 @@ So this is **not** one microservice per feature. Splitting game scoring would ad
 |---|---|---|
 | Queue operations | 10,000 a day, about 3,300 events | Normal events stop at 2,400 a day. Critical events are never shed |
 | Queue retention | 24 hours | D1 is the durable log. A consumer outage over 24 hours loses queued events |
-| Cron triggers | 5 per account | 4 used. Add jobs as subscribers to `cue.clock.hourly`, not as new crons |
+| Cron triggers | 5 per account | 5 used (Cue's clock is one). Add jobs as subscribers to `cue.clock.hourly`, not as new crons |
 | D1 databases | 10 per account | 7 used |
 | CPU | 10 ms a request | Publish does one write and one send |
 | Durable Object namespaces | 100, with preview copies counting | 5 used. `preview_urls: false` everywhere |
