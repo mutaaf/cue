@@ -9,6 +9,8 @@ export const CONTRACTS = {
   // Prompter (the AI gateway). A refusal is once per app per day and is the signal to consider Workers Paid.
   'prompter.budget.refused': { sources: ['prompter'], priority: 'critical', data: { app: 'string', day: 'string', spent: 'number' } },
   'prompter.model.failed': { sources: ['prompter'], priority: 'normal', data: { model: 'string', app: 'string', error: 'string' } },
+  // Cast List (the app catalog): the set of places that disagree with it changed. Counts only.
+  'cast.drift.changed': { sources: ['cast-list'], priority: 'normal', data: { surfaces: 'number', agree: 'number', high: 'number', medium: 'number' } },
   'coldgas.run.scored': { sources: ['cold-gas'], priority: 'normal', data: { course: 'string', total: 'number', tier: '?string' } },
 };
 
