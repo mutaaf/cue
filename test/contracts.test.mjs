@@ -20,3 +20,4 @@ test('oversized data is refused', () => assert.match(validate({ type: 'ops.test.
 test('a bad id is refused', () => assert.match(validate({ type: 'ops.test.ping', id: 'a b', data: { note: 'x' } }, 'any').why, /id must/));
 test('no contract has a personal field', () => { for (const [t, c] of Object.entries(CONTRACTS)) for (const k of Object.keys(c.data)) assert.equal(/(^|_)(ip|email|user|initials|phone)($|_)/i.test(k), false, `${t}.${k}`); });
 test('stage-manager may report review changes, cold-gas may not', () => { assert.equal(validate(ok, 'stage-manager').ok, true); assert.equal(validate(ok, 'cold-gas').ok, false); });
+test('prompter may report a budget refusal, and it is critical', () => { const e = { type: 'prompter.budget.refused', data: { app: 'cold-gas', day: '2026-11-10', spent: 3000 } }; assert.deepEqual(validate(e, 'prompter'), { ok: true, priority: 'critical' }); assert.equal(validate(e, 'cold-gas').ok, false); });
