@@ -5,7 +5,7 @@ export const CONTRACTS = {
   'cue.clock.hourly': { sources: ['cue'], priority: 'normal', data: { hour: 'string' } },
   'ops.test.ping': { sources: ['*'], priority: 'normal', data: { note: 'string' } },
   'ops.test.alert': { sources: ['operator'], priority: 'critical', data: { note: 'string' } },
-  'app.review.changed': { sources: ['lobby'], priority: 'critical', data: { app: 'string', version: 'string', from: 'string', to: 'string' } },
+  'app.review.changed': { sources: ['lobby', 'stage-manager'], priority: 'critical', data: { app: 'string', version: 'string', from: 'string', to: 'string' } },
   'coldgas.run.scored': { sources: ['cold-gas'], priority: 'normal', data: { course: 'string', total: 'number', tier: '?string' } },
 };
 
