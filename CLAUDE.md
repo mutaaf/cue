@@ -9,3 +9,10 @@ Read [AGENTS.md](AGENTS.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) fir
 | `send_email` only reaches a verified Email Routing address | The owner's Gmail is verified. A new address needs verifying in the dashboard |
 | zsh doesn't word-split a variable holding a command | Use a function, not `W="npx wrangler"` |
 | `wrangler d1 migrations apply --remote` asks for confirmation and, piped through grep, silently applied nothing on the first deploy, so every write threw 1101 | `npm run deploy` pipes `yes` in and ends with a health check |
+
+## Definition of done
+
+- `npm test` passes (CI runs `npm run check` on every PR; main is protected).
+- A new event type has a contract in `src/contracts.mjs`, a test, and a row in `docs/PRODUCERS.md`.
+- `npm run deploy` applies migrations, deploys and passes the health check.
+- A new way this broke goes in `docs/LESSONS.md`, and in a test if a test can catch it.
