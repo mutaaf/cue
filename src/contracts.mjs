@@ -6,6 +6,9 @@ export const CONTRACTS = {
   'ops.test.ping': { sources: ['*'], priority: 'normal', data: { note: 'string' } },
   'ops.test.alert': { sources: ['operator'], priority: 'critical', data: { note: 'string' } },
   'app.review.changed': { sources: ['lobby', 'stage-manager'], priority: 'critical', data: { app: 'string', version: 'string', from: 'string', to: 'string' } },
+  // Prompter (the AI gateway). A refusal is once per app per day and is the signal to consider Workers Paid.
+  'prompter.budget.refused': { sources: ['prompter'], priority: 'critical', data: { app: 'string', day: 'string', spent: 'number' } },
+  'prompter.model.failed': { sources: ['prompter'], priority: 'normal', data: { model: 'string', app: 'string', error: 'string' } },
   'coldgas.run.scored': { sources: ['cold-gas'], priority: 'normal', data: { course: 'string', total: 'number', tier: '?string' } },
 };
 

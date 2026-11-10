@@ -22,7 +22,7 @@ So this is **not** one microservice per feature. Splitting game scoring would ad
 | Phase | Service | Evidence | State |
 |---|---|---|---|
 | 1 | **Cue**, the event bus | Everything is polling; no project can react to another | Live |
-| 2 | **Prompter**, one AI gateway and neuron budget | 5 copies of provider code, and per-Worker caps totalling far over the shared 10,000 neurons a day. Models have already failed in production on this | Next |
+| 2 | **Prompter**, one AI gateway and neuron budget | 5 copies of provider code, and per-Worker caps totalling far over the shared 10,000 neurons a day. Models have already failed in production on this | Live (2026-11-10): github.com/mutaaf/prompter. A drop-in for the Workers AI binding: guaranteed share per app, idle shares lent out as the UTC day runs down, model fallback. Bring-your-own-key calls stay in the apps |
 | 3 | **Cast List**, one app catalog | 5 lists that have already drifted | Planned |
 | 4 | **Stage Manager**, release and review tracking | App Store Connect tooling copied across 4+ repos | Live (2026-11-10): github.com/mutaaf/stage-manager. Owner approved the key leaving the Mac; it uses its own read-only key, separate from Lobby's. Woken by `cue.clock.hourly`, no cron |
 | 5 | Shared operator auth, obs ingest | Copies multiplying | Planned |

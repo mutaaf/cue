@@ -102,5 +102,6 @@ export async function sourceForToken(env, header) {
 // Plain words for a person reading it on a phone.
 export function describe(e) {
   if (e.type === 'app.review.changed') return { subject: `App Store: ${e.data.app} ${e.data.version} is now ${e.data.to}`, body: `${e.data.app} ${e.data.version} moved from ${e.data.from} to ${e.data.to}.\n\nhttps://appstoreconnect.apple.com/apps` };
+  if (e.type === 'prompter.budget.refused') return { subject: `AI allowance: ${e.data.app} used its share for ${e.data.day}`, body: `${e.data.app} has spent ${e.data.spent} neurons today and was refused more. The free Workers AI allowance is 10,000 neurons a day for the whole account; it resets at 00:00 UTC.\n\nIf this happens most days, it's time for Workers Paid ($5 a month). Today's split: https://mutaafaziz.com/prompter/api/health` };
   return { subject: `Cue: ${e.type}`, body: JSON.stringify(e.data, null, 2) };
 }
