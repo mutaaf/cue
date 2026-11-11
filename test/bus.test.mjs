@@ -49,6 +49,7 @@ test('dead letters are kept and a person is told', async () => { const e = fakeE
 test('a failed alert does not lose the dead letter', async () => { const e = fakeEnv(), m = msg(ev()); await consumeDead({ messages: [m] }, e, async () => { throw new Error('mail down'); }); assert.equal(e.s.dead.size, 1); assert.equal(m.acked, true); });
 
 test('tokens match by hash and name their source', async () => { const h = await sha256('abc'); const env = { TOKENS: JSON.stringify({ [h]: 'lobby' }) }; assert.equal(await sourceForToken(env, 'Bearer abc'), 'lobby'); assert.equal(await sourceForToken(env, 'Bearer nope'), null); assert.equal(await sourceForToken(env, null), null); });
+test('token checks are stagehand\'s, and a TOKENS value that is not a map matches nothing', async () => { const stagehand = await import('stagehand'); assert.equal(sha256, stagehand.sha256); assert.equal(await sourceForToken({ TOKENS: await sha256('abc') }, 'Bearer abc'), null); assert.equal(await sourceForToken({ TOKENS: 'not json' }, 'Bearer abc'), null); assert.equal(await sourceForToken({}, 'Bearer abc'), null); });
 test('a prototype name is not a token', async () => { assert.equal(await sourceForToken({ TOKENS: '{}' }, 'Bearer constructor'), null); });
 test('a review change reads plainly', () => assert.match(describe({ type: 'app.review.changed', data: { app: 'Hearth', version: '1.0', from: 'REJECTED', to: 'IN_REVIEW' } }).subject, /Hearth 1.0 is now IN_REVIEW/));
 

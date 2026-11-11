@@ -1,5 +1,6 @@
 // The bus: publish, consume, deliver. No Cloudflare imports here, so all of it runs under test.
 import { validate } from './contracts.mjs';
+import { bearer, sha256 } from 'stagehand';
 
 // The free plan allows 10,000 queue operations a day, and each message costs three (write, read, ack):
 // about 3,300 events. Normal events stop at 2,400, which keeps room for every critical event.
@@ -179,16 +180,13 @@ export async function retain(env, now = Date.now()) {
   ]);
 }
 
-export async function sha256(text) {
-  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
+export { sha256 };
 
+// TOKENS is a JSON map of sha-256 hash to source name; the check itself is stagehand's.
 export async function sourceForToken(env, header) {
-  const m = /^Bearer (.+)$/.exec(header || '');
-  if (!m) return null;
-  let tokens; try { tokens = JSON.parse(env.TOKENS || '{}'); } catch { return null; }
-  return Object.hasOwn(tokens, await sha256(m[1])) ? tokens[await sha256(m[1])] : null;
+  const tokens = String(env.TOKENS || '{}').trim();
+  if (!tokens.startsWith('{')) return null;
+  return bearer({ headers: new Headers({ authorization: header || '' }) }, tokens);
 }
 
 // Plain words for a person reading it on a phone.
