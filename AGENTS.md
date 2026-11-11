@@ -9,6 +9,9 @@ The event backbone for every project on mutaafaziz.com. Read docs/ARCHITECTURE.m
 - A producer can't choose its source: binding `props` or the token decides.
 - Consumers are idempotent. `deliveries` records each subscriber, so a retry reruns only what failed.
 - Critical events are never shed, and normal events stop at `NORMAL_DAILY_LIMIT`.
+- Events are CloudEvents 1.0 envelopes (`specversion`, `id`, `source`, `type`, `time`, `datacontenttype`); `priority`, `delay`, `replay` and `v` are extensions.
+- Only critical events page (email plus Web Push to paired phones): an outage or a decision. Facts stay in the log. A pairing link comes from `node scripts/pair-link.mjs` and lasts 14 days.
+- Replays reuse ids, so a subscriber that already succeeded never reruns. Never add a subscriber that isn't idempotent.
 - Stay inside the free plan. No new cron: subscribe to `cue.clock.hourly`.
 
 ## Commands

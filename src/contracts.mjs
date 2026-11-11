@@ -11,6 +11,15 @@ export const CONTRACTS = {
   'prompter.model.failed': { sources: ['prompter'], priority: 'normal', data: { model: 'string', app: 'string', error: 'string' } },
   // Cast List (the app catalog): the set of places that disagree with it changed. Counts only.
   'cast.drift.changed': { sources: ['cast-list'], priority: 'normal', data: { surfaces: 'number', agree: 'number', high: 'number', medium: 'number' } },
+  // Email: Cue reads the DMARC aggregate reports sent to dmarc@ (counts only, never addresses).
+  'email.dmarc.report': { sources: ['cue'], priority: 'normal', data: { org: 'string', pass: 'number', fail: 'number' } },
+  // GitHub: a push to a default branch, signed with the hook secret. Delayed four minutes so the deploy it
+  // starts (Workers Builds) is live before anyone reacts to it.
+  'repo.pushed': { sources: ['github'], priority: 'normal', delay: 240, data: { repo: 'string', branch: 'string' } },
+  // The replay drill: Cue proves weekly that an event can be replayed from the D1 log.
+  'ops.drill': { sources: ['cue'], priority: 'normal', data: { step: 'string' } },
+  // The only kind of page that isn't an outage: a decision only the owner can make.
+  'ops.decision.needed': { sources: ['cue', 'stage-manager', 'cast-list', 'prompter', 'operator'], priority: 'critical', data: { question: 'string', why: 'string', link: 'string' } },
   'coldgas.run.scored': { sources: ['cold-gas'], priority: 'normal', data: { course: 'string', total: 'number', tier: '?string' } },
 };
 
@@ -39,5 +48,5 @@ export function validate(input, source) {
     if (data[key] === undefined) { if (optional) continue; return fail(`data.${key} is required`); }
     if (typeof data[key] !== type || (type === 'number' && !Number.isFinite(data[key]))) return fail(`data.${key} must be a ${type}`);
   }
-  return { ok: true, priority: c.priority };
+  return c.delay ? { ok: true, priority: c.priority, delay: c.delay } : { ok: true, priority: c.priority };
 }

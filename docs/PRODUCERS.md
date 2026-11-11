@@ -8,4 +8,5 @@
 | cast-list | Service binding, when the audit's set of mismatches changes (github.com/mutaaf/cast-list) | `cast.drift.changed` |
 | cold-gas | Service binding | `coldgas.run.scored` |
 | operator | HTTP | `ops.test.alert` |
-| cue | Its own clock | `cue.clock.hourly` |
+| cue | Its own clock; the DMARC mailbox (dmarc@ is routed to this Worker); the weekly replay drill | `cue.clock.hourly`, `email.dmarc.report`, `ops.drill`, `ops.decision.needed` |
+| github | Signed push webhooks (`/cue/hooks/github`, `GITHUB_HOOK_SECRET`) on the repos behind every listing surface. Delayed 240 s so the deploy is live | `repo.pushed` |

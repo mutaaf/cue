@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { publish, consume, consumeDead, NORMAL_DAILY_LIMIT, sourceForToken, sha256, describe } from '../src/bus.mjs';
+import { publish, consume, consumeDead, NORMAL_DAILY_LIMIT, sourceForToken, sha256, describe, latency, pct, replay } from '../src/bus.mjs';
 
 // A small D1 stand-in that knows only the statements the bus runs.
 function fakeEnv({ count = 0 } = {}) {
@@ -14,12 +14,13 @@ function fakeEnv({ count = 0 } = {}) {
       async run() {
         if (sql.startsWith('UPDATE budget')) s.shed++;
         if (sql.startsWith('INSERT OR IGNORE INTO events') && !s.events.has(st.args[0])) s.events.set(st.args[0], st.args);
-        if (sql.startsWith('INSERT INTO deliveries')) s.deliveries.set(`${st.args[0]}|${st.args[1]}`, { status: st.args[2] });
+        if (sql.startsWith('INSERT INTO deliveries')) s.deliveries.set(`${st.args[0]}|${st.args[1]}`, { status: st.args[2], ms: st.args[5] });
         if (sql.startsWith('INSERT OR IGNORE INTO dead')) s.dead.set(st.args[0], st.args);
-      } };
+      },
+      async all() { if (sql.startsWith('SELECT * FROM events')) return { results: [...s.events.values()].map((a) => ({ id: a[0], type: a[1], source: a[2], time: a[3], priority: a[4], data: a[5], received: a[6] })) }; return { results: [] }; } };
     return st;
   };
-  return { s, DB: { prepare }, EVENTS: { send: async (m) => s.sent.push(m) } };
+  return { s, DB: { prepare }, EVENTS: { send: async (m, o) => { s.sent.push(m); s.opts = o; }, sendBatch: async (ms) => { s.batches = (s.batches ?? 0) + 1; for (const m of ms) s.sent.push(m.body); } } };
 }
 const msg = (body, attempts = 1) => { const m = { body, attempts, acked: false, retried: false, ack() { m.acked = true; }, retry() { m.retried = true; } }; return m; };
 const ev = (id = 'e1') => ({ id, type: 'ops.test.ping', source: 'x', time: 't', priority: 'normal', data: { note: 'n' } });
@@ -50,3 +51,13 @@ test('a failed alert does not lose the dead letter', async () => { const e = fak
 test('tokens match by hash and name their source', async () => { const h = await sha256('abc'); const env = { TOKENS: JSON.stringify({ [h]: 'lobby' }) }; assert.equal(await sourceForToken(env, 'Bearer abc'), 'lobby'); assert.equal(await sourceForToken(env, 'Bearer nope'), null); assert.equal(await sourceForToken(env, null), null); });
 test('a prototype name is not a token', async () => { assert.equal(await sourceForToken({ TOKENS: '{}' }, 'Bearer constructor'), null); });
 test('a review change reads plainly', () => assert.match(describe({ type: 'app.review.changed', data: { app: 'Hearth', version: '1.0', from: 'REJECTED', to: 'IN_REVIEW' } }).subject, /Hearth 1.0 is now IN_REVIEW/));
+
+test('events are CloudEvents 1.0 envelopes', async () => { const e = fakeEnv(); await publish(e, ping, 'x'); const m = e.s.sent[0]; assert.equal(m.specversion, '1.0'); assert.equal(m.datacontenttype, 'application/json'); for (const k of ['id', 'source', 'type', 'time']) assert.ok(m[k]); });
+test('a contract delay holds the event in the queue', async () => { const e = fakeEnv(); await publish(e, { type: 'repo.pushed', data: { repo: 'r', branch: 'main' } }, 'github'); assert.equal(e.s.opts.delaySeconds, 240); assert.equal(e.s.sent[0].delay, 240); });
+test('latency is publish to delivery, less the delay', () => { assert.equal(latency({ time: new Date(0).toISOString() }, 1500), 1500); assert.equal(latency({ time: new Date(0).toISOString(), delay: 1 }, 1500), 500); assert.equal(latency({ time: new Date(0).toISOString(), replay: true }, 1500), null); });
+test('a delivery records its latency', async () => { const e = fakeEnv(); await consume({ messages: [msg({ ...ev(), time: new Date().toISOString() })] }, e, [{ name: 's', wants: () => true, run: async () => {} }]); assert.equal(typeof e.s.deliveries.get('e1|s').ms, 'number'); });
+test('percentiles pick from the sorted list', () => { assert.equal(pct([5, 1, 3, 2, 4], 50), 3); assert.equal(pct([], 50), null); });
+test('replay resends logged events with their ids, marked as replays', async () => { const e = fakeEnv(); await consume({ messages: [msg(ev('a')), msg(ev('b'))] }, e, []); const r = await replay(e, { since: '1970' }); assert.equal(r.replayed, 2); assert.deepEqual(e.s.sent.map((m) => m.id), ['a', 'b']); assert.ok(e.s.sent.every((m) => m.replay)); });
+test('a replay does not rerun a subscriber that already succeeded', async () => { const e = fakeEnv(); let n = 0; const subs = [{ name: 's', wants: () => true, run: async () => { n++; } }]; await consume({ messages: [msg(ev())] }, e, subs); await replay(e, { since: '1970' }); await consume({ messages: [msg(e.s.sent[0])] }, e, subs); assert.equal(n, 1); });
+test('replay needs a window or an id', async () => assert.equal((await replay(fakeEnv(), {})).ok, false));
+test('a decision reads as its question, with its link', () => { const d = describe({ type: 'ops.decision.needed', data: { question: 'Q?', why: 'w', link: 'https://x' } }); assert.equal(d.subject, 'Q?'); assert.equal(d.link, 'https://x'); });
