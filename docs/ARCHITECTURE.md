@@ -40,7 +40,7 @@ So this is **not** one microservice per feature. Splitting game scoring would ad
 | Limit | Allowance | Use |
 |---|---|---|
 | Queue operations | 10,000 a day, about 3,300 events | Normal events stop at 2,400 a day. Critical events are never shed |
-| Queue retention | 24 hours | D1 is the durable log. A consumer outage over 24 hours loses queued events |
+| Queue retention | 24 hours | D1 is the durable log (90 days). `POST /cue/api/replay` resends a window from it; a weekly drill proves that works (`drill` in `/cue/api/stats`) |
 | Cron triggers | 5 per account | 5 used (Cue's clock is one). Add jobs as subscribers to `cue.clock.hourly`, not as new crons |
 | D1 databases | 10 per account | 7 used |
 | CPU | 10 ms a request | Publish does one write and one send |
