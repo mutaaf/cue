@@ -1,6 +1,14 @@
 // The event catalog. A type that isn't here can't be published, and a payload that doesn't match is
 // refused at the door, so a bad producer fails loudly and consumers can trust what they read.
 //   priority: critical events skip the budget and alert a human. normal events are shed first.
+//   match: a field must match this pattern, so a field that could carry free text can't.
+
+// The apps that publish their own events (a Worker with a CUE binding whose props.source is the app). One
+// list, so adding an app producer is one line here plus one binding in that app's wrangler config.
+export const APP_SOURCES = ['cold-gas'];
+const SLUG = /^[a-z0-9][a-z0-9-]{0,40}$/;
+export const FUNNEL_STEPS = ['opened', 'started', 'finished'];
+
 export const CONTRACTS = {
   'cue.clock.hourly': { sources: ['cue'], priority: 'normal', data: { hour: 'string' } },
   'ops.test.ping': { sources: ['*'], priority: 'normal', data: { note: 'string' } },
@@ -20,6 +28,10 @@ export const CONTRACTS = {
   'ops.drill': { sources: ['cue'], priority: 'normal', data: { step: 'string' } },
   // The only kind of page that isn't an outage: a decision only the owner can make.
   'ops.decision.needed': { sources: ['cue', 'stage-manager', 'cast-list', 'prompter', 'operator'], priority: 'critical', data: { question: 'string', why: 'string', link: 'string' } },
+  // Cross-app health and funnel. Counts only: an error is a kind and an opaque fingerprint (a hash the app
+  // makes of its own stack or code path), never a message, which could hold what a person typed.
+  'app.error': { sources: APP_SOURCES, priority: 'normal', data: { app: 'string', kind: 'string', fingerprint: 'string' }, match: { app: SLUG, kind: /^[a-z][a-z0-9_.-]{0,39}$/, fingerprint: /^[A-Za-z0-9_-]{6,64}$/ } },
+  'app.funnel': { sources: APP_SOURCES, priority: 'normal', data: { app: 'string', step: 'string' }, match: { app: SLUG, step: new RegExp(`^(${FUNNEL_STEPS.join('|')})$`) } },
   'coldgas.run.scored': { sources: ['cold-gas'], priority: 'normal', data: { course: 'string', total: 'number', tier: '?string' } },
 };
 
@@ -47,6 +59,7 @@ export function validate(input, source) {
     const optional = want.startsWith('?'), type = want.replace('?', '');
     if (data[key] === undefined) { if (optional) continue; return fail(`data.${key} is required`); }
     if (typeof data[key] !== type || (type === 'number' && !Number.isFinite(data[key]))) return fail(`data.${key} must be a ${type}`);
+    if (c.match?.[key] && !c.match[key].test(data[key])) return fail(`data.${key} must match ${c.match[key]}`);
   }
   return c.delay ? { ok: true, priority: c.priority, delay: c.delay } : { ok: true, priority: c.priority };
 }

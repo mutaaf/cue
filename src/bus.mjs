@@ -196,3 +196,27 @@ export function describe(e) {
   if (e.type === 'ops.decision.needed') return { subject: e.data.question, body: e.data.why, link: e.data.link };
   return { subject: `Cue: ${e.type}`, body: JSON.stringify(e.data, null, 2) };
 }
+
+// Cross-app counts, straight from the log: an event is stored once by id (INSERT OR IGNORE), so a retry or a
+// replay never counts twice and there's no counter to drift. Counts only; nothing per person exists to count.
+export const FUNNEL_MAX_DAYS = RETAIN_DAYS;
+export async function funnel(env, days = 7, now = Date.now()) {
+  days = Math.min(FUNNEL_MAX_DAYS, Math.max(1, Math.floor(Number(days)) || 7));
+  const since = new Date(now - days * 864e5).toISOString();
+  const [steps, errs] = await Promise.all([
+    env.DB.prepare("SELECT json_extract(data, '$.app') AS app, json_extract(data, '$.step') AS step, COUNT(*) AS n FROM events WHERE type = 'app.funnel' AND received >= ? GROUP BY app, step").bind(since).all(),
+    env.DB.prepare("SELECT json_extract(data, '$.fingerprint') AS fingerprint, json_extract(data, '$.kind') AS kind, json_extract(data, '$.app') AS app, COUNT(*) AS n, MAX(received) AS last FROM events WHERE type = 'app.error' AND received >= ? GROUP BY fingerprint, kind, app").bind(since).all(),
+  ]);
+  const byApp = {};
+  for (const r of steps.results ?? []) (byApp[r.app] ??= { opened: 0, started: 0, finished: 0 })[r.step] = r.n;
+  const groups = new Map();
+  for (const r of errs.results ?? []) {
+    const g = groups.get(r.fingerprint) ?? { fingerprint: r.fingerprint, kind: r.kind, apps: [], count: 0, last: null };
+    if (!g.apps.includes(r.app)) g.apps.push(r.app);
+    g.count += r.n;
+    if (!g.last || r.last > g.last) g.last = r.last;
+    groups.set(r.fingerprint, g);
+  }
+  const errors = [...groups.values()].map((g) => ({ ...g, apps: g.apps.sort() })).sort((a, b) => b.apps.length - a.apps.length || b.count - a.count || a.fingerprint.localeCompare(b.fingerprint));
+  return { days, since, funnel: byApp, errors };
+}
