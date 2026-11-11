@@ -8,6 +8,7 @@ import { push, paired, publicKeyOf } from './webpush.mjs';
 import { SW, MANIFEST, ICON, SCRIPT, pagerPage } from './pager.mjs';
 import { CONTRACTS } from './contracts.mjs';
 import { statusPage } from './page.mjs';
+import { log, timed } from 'stagehand';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 const clean = (s) => String(s).replace(/[\r\n]+/g, ' ').slice(0, 200);
@@ -65,7 +66,18 @@ export default class Cue extends WorkerEntrypoint {
     try { return await publish(this.env, event, source); } catch (e) { return { ok: false, error: String(e?.message ?? e).slice(0, 200) }; }
   }
 
+  // One log line per request, cron and batch: {service: 'cue', event, ms, ok}. Paths are fixed routes; anything
+  // unmatched is logged as such, never as the path someone typed.
   async fetch(req) {
+    const t = Date.now();
+    let res;
+    try { res = await this.route(req); } catch (e) { log('cue', 'request', { method: req.method, ms: Date.now() - t, ok: false, error: String(e?.message ?? e).slice(0, 200) }); throw e; }
+    const path = new URL(req.url).pathname.replace(/\/+$/, '') || '/cue';
+    log('cue', 'request', { method: req.method, route: res.status === 404 ? 'unmatched' : path, status: res.status, ms: Date.now() - t, ok: res.status < 500 });
+    return res;
+  }
+
+  async route(req) {
     const url = new URL(req.url), path = url.pathname.replace(/\/+$/, '') || '/cue';
     if (path === '/cue') return new Response(statusPage(await stats(this.env), Object.keys(CONTRACTS)), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } });
     if (path === '/cue/api/health') return json({ ok: true, service: 'cue' });
@@ -141,12 +153,11 @@ export default class Cue extends WorkerEntrypoint {
   }
 
   async queue(batch) {
-    if (batch.queue === 'cue-dead') return consumeDead(batch, this.env, sendAlert);
-    return consume(batch, this.env, SUBSCRIBERS);
+    return timed('cue', 'queue', () => (batch.queue === 'cue-dead' ? consumeDead(batch, this.env, sendAlert) : consume(batch, this.env, SUBSCRIBERS)), { queue: batch.queue, size: batch.messages.length });
   }
 
   async scheduled(controller) {
     const hour = new Date(controller.scheduledTime).toISOString().slice(11, 13);
-    await publish(this.env, { type: 'cue.clock.hourly', id: `clock:${new Date(controller.scheduledTime).toISOString().slice(0, 13)}`, data: { hour } }, 'cue');
+    await timed('cue', 'scheduled', () => publish(this.env, { type: 'cue.clock.hourly', id: `clock:${new Date(controller.scheduledTime).toISOString().slice(0, 13)}`, data: { hour } }, 'cue'), { cron: controller.cron });
   }
 }

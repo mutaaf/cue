@@ -9,6 +9,9 @@
     "test": "node --test \"test/*.test.mjs\"",
     "check": "npm test && npx --yes wrangler@4 deploy --dry-run --outdir /tmp/cue-dry >/dev/null && echo bundle-ok",
     "up": "sh scripts/up.sh",
-    "deploy": "npm test && yes | npx --yes wrangler@4 d1 migrations apply cue --remote && npx --yes wrangler@4 deploy && curl -sf https://mutaafaziz.com/cue/api/health"
+    "deploy": "npm ci --no-audit --no-fund && npm test && yes | npx --yes wrangler@4 d1 migrations apply cue --remote && npx --yes wrangler@4 deploy && curl -sf https://mutaafaziz.com/cue/api/health"
+  },
+  "dependencies": {
+    "stagehand": "github:mutaaf/stagehand#v1.0.0"
   }
 }

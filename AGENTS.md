@@ -16,7 +16,7 @@ The event backbone for every project on mutaafaziz.com. Read docs/ARCHITECTURE.m
 
 ## Commands
 
-- `npm test`: bus logic, no Cloudflare needed.
+- `npm test`: bus logic, no Cloudflare needed. Run `npm ci` first: token checks and logging come from [stagehand](https://github.com/mutaaf/stagehand).
 - `npm run check`: tests plus a dry-run bundle. CI runs this.
 - `npm run up`: tests, then a local server.
 - `npm run deploy`: tests, D1 migrations, deploy. Manual, like most Workers here.
