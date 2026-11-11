@@ -1,0 +1,25 @@
+# One issue per error fingerprint across apps, from Cue's public counts. GitHub's scheduler, not a Cloudflare
+# cron (the free plan's five are used), and only the repo's own GITHUB_TOKEN.
+name: Cross-app issues
+on:
+  schedule:
+    - cron: '23 13 * * *'
+  workflow_dispatch:
+concurrency:
+  group: cross-app-issues
+  cancel-in-progress: false
+permissions:
+  contents: read
+  issues: write
+jobs:
+  issues:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/cross-app-issues.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

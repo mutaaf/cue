@@ -2,7 +2,7 @@
 // token (anything else). A Queue carries the event, D1 keeps the log, and subscribers react.
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { EmailMessage } from 'cloudflare:email';
-import { publish, consume, consumeDead, stats, retain, sourceForToken, describe, replay, drillStep, agreement } from './bus.mjs';
+import { publish, consume, consumeDead, stats, funnel, retain, sourceForToken, describe, replay, drillStep, agreement } from './bus.mjs';
 import { readReport } from './dmarc.mjs';
 import { push, paired, publicKeyOf } from './webpush.mjs';
 import { SW, MANIFEST, ICON, SCRIPT, pagerPage } from './pager.mjs';
@@ -82,7 +82,9 @@ export default class Cue extends WorkerEntrypoint {
     if (path === '/cue') return new Response(statusPage(await stats(this.env), Object.keys(CONTRACTS)), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } });
     if (path === '/cue/api/health') return json({ ok: true, service: 'cue' });
     if (path === '/cue/api/stats') return json(await stats(this.env));
-    if (path === '/cue/api/contracts') return json(CONTRACTS);
+    if (path === '/cue/api/contracts') return new Response(JSON.stringify(CONTRACTS, (k, v) => (v instanceof RegExp ? v.source : v)), { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+    // Counts only, public: per app per funnel step, and error fingerprints grouped across apps.
+    if (path === '/cue/api/funnel') return new Response(JSON.stringify(await funnel(this.env, url.searchParams.get('days') ?? 7)), { headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
     if (path === '/cue/pager') { const n = await this.env.DB.prepare('SELECT COUNT(*) AS n FROM pager').first(); return new Response(pagerPage(publicKeyOf(JSON.parse(this.env.VAPID_JWK)), n?.n ?? 0), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } }); }
     if (path === '/cue/sw.js') return new Response(SW, { headers: { 'content-type': 'text/javascript', 'cache-control': 'no-cache', 'service-worker-allowed': '/cue/' } });
     if (path === '/cue/pager.js') return new Response(SCRIPT, { headers: { 'content-type': 'text/javascript', 'cache-control': 'no-cache' } });
