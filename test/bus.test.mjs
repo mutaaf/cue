@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { publish, consume, consumeDead, NORMAL_DAILY_LIMIT, sourceForToken, sha256, describe, latency, pct, replay } from '../src/bus.mjs';
+import { publish, consume, consumeDead, NORMAL_DAILY_LIMIT, sourceForToken, sha256, describe, latency, pct, replay, stats } from '../src/bus.mjs';
 
 // A small D1 stand-in that knows only the statements the bus runs.
 function fakeEnv({ count = 0 } = {}) {
@@ -62,3 +62,10 @@ test('replay resends logged events with their ids, marked as replays', async () 
 test('a replay does not rerun a subscriber that already succeeded', async () => { const e = fakeEnv(); let n = 0; const subs = [{ name: 's', wants: () => true, run: async () => { n++; } }]; await consume({ messages: [msg(ev())] }, e, subs); await replay(e, { since: '1970' }); await consume({ messages: [msg(e.s.sent[0])] }, e, subs); assert.equal(n, 1); });
 test('replay needs a window or an id', async () => assert.equal((await replay(fakeEnv(), {})).ok, false));
 test('a decision reads as its question, with its link', () => { const d = describe({ type: 'ops.decision.needed', data: { question: 'Q?', why: 'w', link: 'https://x' } }); assert.equal(d.subject, 'Q?'); assert.equal(d.link, 'https://x'); });
+
+test('stats counts paired phones and nothing else about them', async () => {
+  const env = { DB: { prepare: (sql) => { const st = { bind: () => st, all: async () => ({ results: [] }), first: async () => (sql.includes('FROM pager') ? { n: 2 } : null) }; return st; } } };
+  const s = await stats(env, Date.parse('2026-11-12T00:00:00Z'));
+  assert.deepEqual(s.pager, { devices: 2 });
+  assert.ok(!JSON.stringify(s).includes('endpoint'));
+});

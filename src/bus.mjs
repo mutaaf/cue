@@ -151,7 +151,7 @@ export async function consumeDead(batch, env, alert, now = Date.now()) {
 export async function stats(env, now = Date.now()) {
   const since = new Date(now - 864e5).toISOString();
   const week = new Date(now - 7 * 864e5).toISOString();
-  const [types, totals, budget, dead, last, lat, drill, dmarc] = await Promise.all([
+  const [types, totals, budget, dead, last, lat, drill, dmarc, pager] = await Promise.all([
     env.DB.prepare('SELECT type, COUNT(*) AS n FROM events WHERE received >= ? GROUP BY type ORDER BY n DESC').bind(since).all(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM events').first(),
     env.DB.prepare('SELECT count, shed FROM budget WHERE day = ?').bind(day(now)).first(),
@@ -160,6 +160,7 @@ export async function stats(env, now = Date.now()) {
     env.DB.prepare("SELECT ms FROM deliveries WHERE status = 'ok' AND ms IS NOT NULL AND at >= ? ORDER BY at DESC LIMIT 2000").bind(week).all(),
     env.DB.prepare('SELECT id, started, verified, ok, ms, note FROM drills ORDER BY started DESC LIMIT 1').first(),
     env.DB.prepare('SELECT COUNT(*) AS reports, COALESCE(SUM(pass), 0) AS pass, COALESCE(SUM(fail), 0) AS fail, MAX(day) AS last FROM dmarc WHERE at >= ?').bind(new Date(now - 30 * 864e5).toISOString()).first(),
+    env.DB.prepare('SELECT COUNT(*) AS n FROM pager').first(),
   ]);
   const ms = (lat.results ?? []).map((r) => r.ms);
   return {
@@ -168,6 +169,8 @@ export async function stats(env, now = Date.now()) {
     drill: drill ? { at: drill.started, ok: drill.ok === null ? null : Boolean(drill.ok), ms: drill.ms, note: drill.note } : null,
     dmarc: { days: 30, reports: dmarc?.reports ?? 0, pass: dmarc?.pass ?? 0, fail: dmarc?.fail ?? 0, last: dmarc?.last ?? null },
     retention: { queueHours: 24, logDays: RETAIN_DAYS },
+    // How many phones would hear a critical event. A count only: endpoints and keys never leave D1.
+    pager: { devices: pager?.n ?? 0 },
   };
 }
 
