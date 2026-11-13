@@ -34,6 +34,7 @@ export async function consume(batch, env, subs, now = Date.now()) {
     try {
       await env.DB.prepare('INSERT OR IGNORE INTO events (id, type, source, time, priority, data, received) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .bind(e.id, e.type, e.source, e.time, e.priority, JSON.stringify(e.data), new Date(now).toISOString()).run();
+      if (e.type === 'app.review.changed') await env.DB.prepare('INSERT OR IGNORE INTO echoes (id, source, at) VALUES (?, ?, ?)').bind(e.id, e.source, new Date(now).toISOString()).run();
       let failed = false;
       for (const s of subscribersFor(e, subs)) {
         const done = await env.DB.prepare("SELECT 1 FROM deliveries WHERE event_id = ? AND subscriber = ? AND status = 'ok'").bind(e.id, s.name).first();
@@ -119,22 +120,30 @@ async function finish(env, open, now, alert, why, hours) {
   return { step: 'failed', id: open.id, why };
 }
 
-// Retiring Lobby's Mac watcher: Stage Manager and the watcher publish the same review change under the same
-// id, and the log keeps whichever came first. When Stage Manager came first every time for 14 days (or nothing
-// changed) and its hourly tick never failed, the watcher has nothing left to catch.
+// Retiring Lobby's Mac watcher. Both watchers run hourly and publish the same review change under the same
+// id; the log keeps whichever came first, and echoes records everyone who reported it. The watcher has nothing
+// left to catch when, for 14 days, every change it reported Stage Manager also saw (that change, or a later state
+// of the same version, within two hours) and Stage Manager's hourly tick never failed. Who came first is shown,
+// but it's a race between two timers, so it doesn't decide anything.
 export const RETIRE_DAYS = 14;
+export const CATCH_UP_MS = 2 * 3600e3;
 export async function agreement(env, now = Date.now()) {
   const since = new Date(now - RETIRE_DAYS * 864e5).toISOString();
-  const [bySource, ticks, first] = await Promise.all([
-    env.DB.prepare("SELECT source, COUNT(*) AS n FROM events WHERE type = 'app.review.changed' AND received >= ? GROUP BY source").bind(since).all(),
+  const [changes, ticks, first] = await Promise.all([
+    env.DB.prepare("SELECT e.id, e.source, e.received, json_extract(e.data, '$.app') AS app, json_extract(e.data, '$.version') AS version, (SELECT MIN(x.at) FROM echoes x WHERE x.id = e.id AND x.source = 'stage-manager') AS stageAt FROM events e WHERE e.type = 'app.review.changed' AND e.received >= ?").bind(since).all(),
     env.DB.prepare("SELECT status, COUNT(*) AS n FROM deliveries WHERE subscriber = 'stage-manager' AND at >= ? GROUP BY status").bind(since).all(),
     env.DB.prepare("SELECT MIN(at) AS at FROM deliveries WHERE subscriber = 'stage-manager'").first(),
   ]);
-  const src = Object.fromEntries((bySource.results ?? []).map((r) => [r.source, r.n]));
+  const rows = changes.results ?? [];
+  const seen = rows.map((r) => ({ key: `${r.app}|${r.version}`, at: Date.parse(r.source === 'stage-manager' ? r.received : r.stageAt ?? '') })).filter((s) => s.at);
+  const lobby = rows.filter((r) => r.source === 'lobby');
+  const settled = lobby.filter((r) => now - Date.parse(r.received) >= CATCH_UP_MS);
+  const caught = settled.filter((r) => { const t = Date.parse(r.received); return seen.some((s) => s.key === `${r.app}|${r.version}` && s.at >= t && s.at - t <= CATCH_UP_MS); }).length;
   const t = Object.fromEntries((ticks.results ?? []).map((r) => [r.status, r.n]));
   const covered = first?.at ? Math.min(RETIRE_DAYS, Math.floor((now - Date.parse(first.at)) / 864e5)) : 0;
-  const ready = covered >= RETIRE_DAYS && !src.lobby && !t.failed && (t.ok ?? 0) >= RETIRE_DAYS * 20;
-  return { days: RETIRE_DAYS, covered, stageFirst: src['stage-manager'] ?? 0, lobbyFirst: src.lobby ?? 0, ticksOk: t.ok ?? 0, ticksFailed: t.failed ?? 0, ready };
+  const missed = settled.length - caught;
+  const ready = covered >= RETIRE_DAYS && missed === 0 && !t.failed && (t.ok ?? 0) >= RETIRE_DAYS * 20;
+  return { days: RETIRE_DAYS, covered, stageFirst: rows.filter((r) => r.source === 'stage-manager').length, lobbyFirst: lobby.length, caught, missed, ticksOk: t.ok ?? 0, ticksFailed: t.failed ?? 0, ready };
 }
 
 // What retries gave up on. It stays in the log, marked, and a person hears about it.
@@ -151,11 +160,12 @@ export async function consumeDead(batch, env, alert, now = Date.now()) {
 export async function stats(env, now = Date.now()) {
   const since = new Date(now - 864e5).toISOString();
   const week = new Date(now - 7 * 864e5).toISOString();
-  const [types, totals, budget, dead, last, lat, drill, dmarc, pager] = await Promise.all([
+  const [types, totals, budget, dead, deadWeek, last, lat, drill, dmarc, pager] = await Promise.all([
     env.DB.prepare('SELECT type, COUNT(*) AS n FROM events WHERE received >= ? GROUP BY type ORDER BY n DESC').bind(since).all(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM events').first(),
     env.DB.prepare('SELECT count, shed FROM budget WHERE day = ?').bind(day(now)).first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM dead').first(),
+    env.DB.prepare('SELECT COUNT(*) AS n FROM dead WHERE at >= ?').bind(week).first(),
     env.DB.prepare('SELECT MAX(received) AS at FROM events').first(),
     env.DB.prepare("SELECT ms FROM deliveries WHERE status = 'ok' AND ms IS NOT NULL AND at >= ? ORDER BY at DESC LIMIT 2000").bind(week).all(),
     env.DB.prepare('SELECT id, started, verified, ok, ms, note FROM drills ORDER BY started DESC LIMIT 1').first(),
@@ -164,7 +174,7 @@ export async function stats(env, now = Date.now()) {
   ]);
   const ms = (lat.results ?? []).map((r) => r.ms);
   return {
-    last24h: types.results ?? [], total: totals?.n ?? 0, today: { published: budget?.count ?? 0, shed: budget?.shed ?? 0, normalLimit: NORMAL_DAILY_LIMIT }, dead: dead?.n ?? 0, lastEventAt: last?.at ?? null,
+    last24h: types.results ?? [], total: totals?.n ?? 0, today: { published: budget?.count ?? 0, shed: budget?.shed ?? 0, normalLimit: NORMAL_DAILY_LIMIT }, dead: dead?.n ?? 0, deadWeek: deadWeek?.n ?? 0, lastEventAt: last?.at ?? null,
     latency: { days: 7, deliveries: ms.length, p50: pct(ms, 50), p95: pct(ms, 95), max: ms.length ? Math.max(...ms) : null },
     drill: drill ? { at: drill.started, ok: drill.ok === null ? null : Boolean(drill.ok), ms: drill.ms, note: drill.note } : null,
     dmarc: { days: 30, reports: dmarc?.reports ?? 0, pass: dmarc?.pass ?? 0, fail: dmarc?.fail ?? 0, last: dmarc?.last ?? null },
@@ -179,6 +189,7 @@ export async function retain(env, now = Date.now()) {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM deliveries WHERE event_id IN (SELECT id FROM events WHERE received < ?)').bind(cut),
     env.DB.prepare('DELETE FROM events WHERE received < ?').bind(cut),
+    env.DB.prepare('DELETE FROM echoes WHERE at < ?').bind(cut),
     env.DB.prepare('DELETE FROM budget WHERE day < ?').bind(cut.slice(0, 10)),
   ]);
 }
