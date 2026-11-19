@@ -272,7 +272,7 @@ export async function stats(env, now = Date.now()) {
   ]);
   const ms = (lat.results ?? []).map((r) => r.ms);
   const rows = subs?.results ?? [];
-  const summary = (rs) => { const xs = rs.map((r) => r.ms).filter((x) => typeof x === 'number'); return { n: xs.length, p50: pct(xs, 50), p95: pct(xs, 95) }; };
+  const summary = (rs) => { const xs = rs.map((r) => r.ms).filter((x) => typeof x === 'number'); return { n: xs.length, p50: pct(xs, 50), p95: pct(xs, 95), max: xs.length ? Math.max(...xs) : null }; };
   const group = (key) => { const m = {}; for (const r of rows) (m[r[key] ?? 'queue'] ??= []).push(r); return m; };
   const byPath = Object.fromEntries(Object.entries(group('path')).map(([k, rs]) => [k, summary(rs.filter((r) => r.status === 'ok'))]));
   const subscribers = Object.entries(group('subscriber')).map(([name, rs]) => ({ name, ok: rs.filter((r) => r.status === 'ok').length, failed: rs.filter((r) => r.status === 'failed').length, ...summary(rs.filter((r) => r.status === 'ok')) })).sort((a, b) => a.name.localeCompare(b.name));
