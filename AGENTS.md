@@ -8,6 +8,8 @@ The event backbone for every project on mutaafaziz.com. Read docs/ARCHITECTURE.m
 - A type not in `CONTRACTS` can't be published.
 - A producer can't choose its source: binding `props` or the token decides.
 - Consumers are idempotent. `deliveries` records each subscriber, so a retry reruns only what failed.
+- Delivery is inline by default: logged to D1, then every subscriber in parallel under `INLINE_TIMEOUT_MS`. A subscriber that can take more than a few seconds is marked `queue: true`. A failure is retried on the queue lane with backoff (1, 4, 15 min), and the hourly `sweep` resends anything never delivered. Only the first copy of an id delivers.
+- Public reads (`stats`, `agreement`, `contracts`, `funnel`, the status page) go through `cached()`. `/cue/api/health` is never cached and answers 503 only when D1 doesn't.
 - Critical events are never shed, and normal events stop at `NORMAL_DAILY_LIMIT`.
 - Events are CloudEvents 1.0 envelopes (`specversion`, `id`, `source`, `type`, `time`, `datacontenttype`); `priority`, `delay`, `replay` and `v` are extensions.
 - Only critical events page (email plus Web Push to paired phones): an outage or a decision. Facts stay in the log. A pairing link comes from `node scripts/pair-link.mjs` and lasts 14 days.
@@ -25,7 +27,7 @@ The event backbone for every project on mutaafaziz.com. Read docs/ARCHITECTURE.m
 
 - A test fails without the change.
 - `npm run check` is green.
-- After deploying: `/cue/api/health` answers, and a test event shows up in `/cue/api/stats`.
+- After deploying: `/cue/api/health` answers with this version and no new warnings, and a test event shows up in `/cue/api/stats` with `path: inline`.
 - Change the free plan table in docs/ARCHITECTURE.md if the numbers moved.
 
 ## Shipping

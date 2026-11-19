@@ -9,13 +9,20 @@ No two apps share a database and almost everything cross-app is polling. Traffic
 So this is **not** one microservice per feature. Splitting game scoring would add hops against a 10 ms budget and gain nothing. The portfolio gets one event backbone, and a shared service only where duplication already causes real trouble.
 
 ```text
- producers                    backbone                          subscribers
- Worker  -- service binding -->                              +-> alert email
- Lobby   -- HTTP + token ----> Cue --> Queue --> consumer ---+-> retention
- CI, Vercel -- HTTP + token ->             |         |       +-> next: Prompter, Cast List, ...
-                                           v         v
-                                      dead letters  D1 log (replayable, 90 days)
+ producers                    backbone                                  subscribers, in parallel
+ Worker  -- service binding -->      +-- inline lane (same invocation) ---+-> alert email, pager
+ Lobby   -- HTTP + token ----> Cue --+   D1 log first, then deliver       +-> Stage Manager, drill, ...
+ CI, Vercel -- HTTP + token ->       +-- queue lane: contract delays, ----+-> Cast List audit (long job)
+                                         long jobs, retries 1/4/15 min
+                                              |                    hourly sweep: anything never delivered
+                                              v                    in 45 min to 26 h is sent again
+                                         dead letters        D1 log (replayable, 90 days)
 ```
+
+Delivery used to wait on the queue: up to 5 s to fill a batch, then a hop, then subscribers one at a time,
+7.9 s at the median. Since 2026-11-18 an event is written to D1 and delivered in the same invocation, every
+subscriber at once, each under a 20 s limit. Whatever fails, and any subscriber marked `queue: true`, goes to
+the queue lane. `/cue/api/stats` splits latency by lane (`latency.byPath`) and by subscriber (`subscribers`).
 
 ## Phases
 
@@ -39,11 +46,12 @@ So this is **not** one microservice per feature. Splitting game scoring would ad
 
 | Limit | Allowance | Use |
 |---|---|---|
-| Queue operations | 10,000 a day, about 3,300 events | Normal events stop at 2,400 a day, cross-app `app.funnel`/`app.error` included. Critical events are never shed |
+| Queue operations | 10,000 a day, about 3,300 events | Only the queue lane uses them now (delays, long jobs, retries, sweeps), so most events cost none. Normal events still stop at 2,400 a day, cross-app `app.funnel`/`app.error` included. Critical events are never shed |
 | Queue retention | 24 hours | D1 is the durable log (90 days). `POST /cue/api/replay` resends a window from it; a weekly drill proves that works (`drill` in `/cue/api/stats`) |
 | Cron triggers | 5 per account | 5 used (Cue's clock is one). Add jobs as subscribers to `cue.clock.hourly`, not as new crons |
 | D1 databases | 10 per account | 7 used |
-| CPU | 10 ms a request | Publish does one write and one send |
+| CPU | 10 ms a request | Publish does two D1 round trips; delivery is mostly waiting on subscribers, which isn't CPU. Public reads are served from the edge cache (30 s to 5 min) |
+| Workers Logs and traces | 200,000 events a day | One log line per request, delivery and batch, and traces at full sampling: a few thousand a day |
 | Durable Object namespaces | 100, with preview copies counting | 5 used. `preview_urls: false` everywhere |
 
 When traffic pushes past this, Workers Paid is $5 a month. That's the owner's decision, and the budget table above shows when.
