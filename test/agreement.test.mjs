@@ -25,7 +25,7 @@ test('any failed tick blocks retirement', async () => { const r = await agreemen
 test('fewer than fourteen days of ticks is not ready', async () => { const r = await agreement(env([], undefined, ago(24 * 3)), NOW); assert.equal(r.covered, 3); assert.equal(r.ready, false); });
 
 test('every report of a review change is recorded, including the duplicate', async () => {
-  const echoes = []; const DB = { prepare: (sql) => ({ bind(...a) { this.a = a; return this; }, async run() { if (sql.includes('INTO echoes')) echoes.push(this.a); }, async first() { return null; } }) };
+  const echoes = []; const DB = { prepare: (sql) => ({ bind(...a) { this.a = a; return this; }, async run() { if (sql.includes('INTO echoes')) echoes.push(this.a); }, async first() { return null; }, async all() { return { results: [] }; } }), batch: async (xs) => Promise.all(xs.map((x) => x.run())) };
   const m = (source) => ({ body: { id: 'review:A:1.0_X', type: 'app.review.changed', source, data: {} }, ack() {}, retry() {} });
   await consume({ messages: [m('lobby'), m('stage-manager')] }, { DB }, []);
   assert.deepEqual(echoes.map((a) => a[1]), ['lobby', 'stage-manager']);

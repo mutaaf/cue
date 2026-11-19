@@ -2,7 +2,7 @@
 // token (anything else). A Queue carries the event, D1 keeps the log, and subscribers react.
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { EmailMessage } from 'cloudflare:email';
-import { publish, consume, consumeDead, stats, funnel, retain, sourceForToken, describe, replay, drillStep, agreement } from './bus.mjs';
+import { publish, consume, consumeDead, stats, funnel, retain, sourceForToken, describe, replay, drillStep, agreement, sweep, health } from './bus.mjs';
 import { readReport } from './dmarc.mjs';
 import { push, paired, publicKeyOf } from './webpush.mjs';
 import { SW, MANIFEST, ICON, SCRIPT, pagerPage } from './pager.mjs';
@@ -11,6 +11,14 @@ import { statusPage } from './page.mjs';
 import { log, timed } from 'stagehand';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+// Request bodies are read with a ceiling, so nobody can make Cue buffer more than an event could ever need.
+const LIMITS = { publish: 16_384, pair: 4_096, github: 5_000_000 };
+async function bodyOf(req, max) {
+  if (Number(req.headers.get('content-length') ?? 0) > max) return null;
+  const text = await req.text();
+  return text.length > max ? null : text;
+}
+const tooBig = () => json({ ok: false, error: 'the body is too large' }, 413);
 const clean = (s) => String(s).replace(/[\r\n]+/g, ' ').slice(0, 200);
 
 async function sendAlert(subject, body, env, link = null) {
@@ -40,13 +48,15 @@ const SUBSCRIBERS = [
   { name: 'pager', wants: (e) => e.priority === 'critical' && !e.replay, run: (e, env) => page(env, describe(e), e.id).then(() => {}) },
   // Cast List audits every listing surface when one of their repos changes (the push is delayed until the
   // deploy is live), and once a day as a safety net. Nothing polls GitHub.
-  { name: 'cast-audit', wants: (e) => e.type === 'repo.pushed' || (e.type === 'cue.clock.hourly' && e.data.hour === '06'), run: (e, env) => env.CAST?.audit() },
+  // It reads ten surfaces and can outlast waitUntil's 30 s, so it always takes the queue lane.
+  { name: 'cast-audit', queue: true, wants: (e) => e.type === 'repo.pushed' || (e.type === 'cue.clock.hourly' && e.data.hour === '06'), run: (e, env) => env.CAST?.audit() },
   { name: 'drill-clock', wants: (e) => e.type === 'cue.clock.hourly', run: (e, env) => drillStep(env, Date.now(), sendAlert) },
   { name: 'drill', wants: (e) => e.type === 'ops.drill', run: () => {} },
   // Stage Manager has no cron of its own: the clock reaches it as an event. It throws when Apple refuses,
   // so a revoked key is retried, dead-lettered and emailed.
   { name: 'stage-manager', wants: (e) => e.type === 'cue.clock.hourly', run: (e, env) => env.STAGE?.tick() },
   { name: 'retention', wants: (e) => e.type === 'cue.clock.hourly' && e.data.hour === '04', run: (e, env) => retain(env) },
+  { name: 'sweep', wants: (e) => e.type === 'cue.clock.hourly', run: (e, env) => sweep(env, SUBSCRIBERS) },
 ];
 
 async function signed(secret, body, header) {
@@ -63,7 +73,7 @@ export default class Cue extends WorkerEntrypoint {
   async publish(event) {
     const source = this.ctx.props?.source;
     if (!source) return { ok: false, error: 'this binding has no props.source' };
-    try { return await publish(this.env, event, source); } catch (e) { return { ok: false, error: String(e?.message ?? e).slice(0, 200) }; }
+    try { return await publish(this.env, event, source, Date.now(), this.ctx, SUBSCRIBERS); } catch (e) { return { ok: false, error: String(e?.message ?? e).slice(0, 200) }; }
   }
 
   // One log line per request, cron and batch: {service: 'cue', event, ms, ok}. Paths are fixed routes; anything
@@ -79,19 +89,20 @@ export default class Cue extends WorkerEntrypoint {
 
   async route(req) {
     const url = new URL(req.url), path = url.pathname.replace(/\/+$/, '') || '/cue';
-    if (path === '/cue') return new Response(statusPage(await stats(this.env), Object.keys(CONTRACTS)), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } });
-    if (path === '/cue/api/health') return json({ ok: true, service: 'cue' });
-    if (path === '/cue/api/stats') return json(await stats(this.env));
-    if (path === '/cue/api/contracts') return new Response(JSON.stringify(CONTRACTS, (k, v) => (v instanceof RegExp ? v.source : v)), { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+    const get = req.method === 'GET' || req.method === 'HEAD';
+    if (path === '/cue' && get) return this.cached(req, path, 60, async () => new Response(statusPage(await stats(this.env), Object.keys(CONTRACTS)), { headers: { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } }));
+    if (path === '/cue/api/health') return this.health();
+    if (path === '/cue/api/stats' && get) return this.cached(req, path, 30, async () => json(await stats(this.env)));
+    if (path === '/cue/api/contracts' && get) return this.cached(req, path, 300, async () => new Response(JSON.stringify(CONTRACTS, (k, v) => (v instanceof RegExp ? v.source : v)), { headers: { 'content-type': 'application/json' } }));
     // Counts only, public: per app per funnel step, and error fingerprints grouped across apps.
-    if (path === '/cue/api/funnel') return new Response(JSON.stringify(await funnel(this.env, url.searchParams.get('days') ?? 7)), { headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
+    if (path === '/cue/api/funnel' && get) { const days = Math.min(90, Math.max(1, Math.floor(Number(url.searchParams.get('days') ?? 7)) || 7)); return this.cached(req, `${path}?days=${days}`, 300, async () => { const r = json(await funnel(this.env, days)); r.headers.set('access-control-allow-origin', '*'); return r; }); }
     if (path === '/cue/pager') { const n = await this.env.DB.prepare('SELECT COUNT(*) AS n FROM pager').first(); return new Response(pagerPage(publicKeyOf(JSON.parse(this.env.VAPID_JWK)), n?.n ?? 0), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } }); }
     if (path === '/cue/sw.js') return new Response(SW, { headers: { 'content-type': 'text/javascript', 'cache-control': 'no-cache', 'service-worker-allowed': '/cue/' } });
     if (path === '/cue/pager.js') return new Response(SCRIPT, { headers: { 'content-type': 'text/javascript', 'cache-control': 'no-cache' } });
     if (path === '/cue/pager.webmanifest') return new Response(MANIFEST, { headers: { 'content-type': 'application/manifest+json' } });
     if (path === '/cue/pager.svg') return new Response(ICON, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' } });
     if (path === '/cue/api/pager' && req.method === 'POST') return this.pair(req);
-    if (path === '/cue/api/agreement') return json(await agreement(this.env));
+    if (path === '/cue/api/agreement' && get) return this.cached(req, path, 60, async () => json(await agreement(this.env)));
     if (path === '/cue/hooks/github' && req.method === 'POST') return this.github(req);
     const source = await sourceForToken(this.env, req.headers.get('authorization'));
     if (path === '/cue/api/replay' && req.method === 'POST') {
@@ -105,8 +116,9 @@ export default class Cue extends WorkerEntrypoint {
     }
     if (path === '/cue/api/publish' && req.method === 'POST') {
       if (!source) return json({ ok: false, error: 'a valid token is required' }, 401);
-      let body; try { body = await req.json(); } catch { return json({ ok: false, error: 'the body must be JSON' }, 400); }
-      const r = await publish(this.env, body, source);
+      const text = await bodyOf(req, LIMITS.publish); if (text === null) return tooBig();
+      let body; try { body = JSON.parse(text); } catch { return json({ ok: false, error: 'the body must be JSON' }, 400); }
+      const r = await publish(this.env, body, source, Date.now(), this.ctx, SUBSCRIBERS);
       return json(r, r.ok ? 202 : (r.status ?? 500));
     }
     if (path === '/cue/api/events' && req.method === 'GET') {
@@ -118,9 +130,37 @@ export default class Cue extends WorkerEntrypoint {
     return json({ ok: false, error: 'not found' }, 404);
   }
 
+  // Public reads come from Cloudflare's edge cache for a few seconds to minutes, so a page full of live tiles
+  // costs D1 one query set per window, not one per visitor. Server-Timing says how long the build took and
+  // x-cue-cache says whether this answer came from the cache.
+  async cached(req, key, ttl, build) {
+    const cache = globalThis.caches?.default, id = new Request(new URL(key, req.url).toString());
+    const hit = cache && (await cache.match(id).catch(() => null));
+    if (hit) { const r = new Response(hit.body, hit); r.headers.set('x-cue-cache', 'HIT'); return r; }
+    const t = Date.now(), built = await build(), res = new Response(built.body, built);
+    res.headers.set('cache-control', `public, max-age=${ttl}`);
+    res.headers.set('server-timing', `build;dur=${Date.now() - t}`);
+    res.headers.set('x-cue-cache', 'MISS');
+    if (cache && res.status === 200) this.ctx.waitUntil(cache.put(id, res.clone()).catch(() => {}));
+    return res;
+  }
+
+  async health() {
+    try {
+      const h = await health(this.env);
+      const r = json({ ...h, version: this.env.CF_VERSION_METADATA?.id?.slice(0, 8) ?? null });
+      r.headers.set('server-timing', `db;dur=${h.db.ms}`);
+      return r;
+    } catch (e) {
+      log('cue', 'health', { ok: false, error: String(e?.message ?? e).slice(0, 200) });
+      return json({ ok: false, service: 'cue', error: 'the database did not answer' }, 503);
+    }
+  }
+
   // Pair a phone: only with a pairing link the operator made (PAIR_SECRET), and it gets a test page at once.
   async pair(req) {
-    let b; try { b = await req.json(); } catch { return json({ ok: false, error: 'the body must be JSON' }, 400); }
+    const text = await bodyOf(req, LIMITS.pair); if (text === null) return tooBig();
+    let b; try { b = JSON.parse(text); } catch { return json({ ok: false, error: 'the body must be JSON' }, 400); }
     if (!(await paired(this.env.PAIR_SECRET, b?.k))) return json({ ok: false, error: 'This pairing link has expired or is not valid.' }, 403);
     const sub = b.sub ?? {}, p256dh = sub.keys?.p256dh, auth = sub.keys?.auth;
     if (!/^https:\/\//.test(sub.endpoint ?? '') || !p256dh || !auth || sub.endpoint.length > 1000) return json({ ok: false, error: 'not a push subscription' }, 400);
@@ -131,7 +171,7 @@ export default class Cue extends WorkerEntrypoint {
 
   // GitHub push webhooks from the repos behind the listing surfaces, signed with GITHUB_HOOK_SECRET.
   async github(req) {
-    const body = await req.text();
+    const body = await bodyOf(req, LIMITS.github); if (body === null) return tooBig();
     if (!this.env.GITHUB_HOOK_SECRET || !(await signed(this.env.GITHUB_HOOK_SECRET, body, req.headers.get('x-hub-signature-256')))) return json({ ok: false, error: 'bad signature' }, 401);
     const kind = req.headers.get('x-github-event');
     if (kind === 'ping') return json({ ok: true, pong: true });
@@ -139,7 +179,7 @@ export default class Cue extends WorkerEntrypoint {
     let p; try { p = JSON.parse(body); } catch { return json({ ok: false, error: 'the body must be JSON' }, 400); }
     const branch = String(p.ref ?? '').replace('refs/heads/', ''), repo = String(p.repository?.name ?? '');
     if (!repo || branch !== p.repository?.default_branch || p.deleted) return json({ ok: true, ignored: 'not the default branch' });
-    const r = await publish(this.env, { type: 'repo.pushed', id: `push:${repo}:${String(p.after ?? '').slice(0, 12)}`.replace(/[^\w.:-]/g, '_'), data: { repo, branch } }, 'github');
+    const r = await publish(this.env, { type: 'repo.pushed', id: `push:${repo}:${String(p.after ?? '').slice(0, 12)}`.replace(/[^\w.:-]/g, '_'), data: { repo, branch } }, 'github', Date.now(), this.ctx, SUBSCRIBERS);
     return json(r, r.ok ? 202 : (r.status ?? 500));
   }
 
@@ -151,7 +191,7 @@ export default class Cue extends WorkerEntrypoint {
     if (!r) return;
     const now = new Date().toISOString();
     const res = await this.env.DB.prepare('INSERT OR IGNORE INTO dmarc (id, org, day, pass, fail, at) VALUES (?, ?, ?, ?, ?, ?)').bind(r.id, r.org, r.day ?? now.slice(0, 10), r.pass, r.fail, now).run();
-    if (res.meta?.changes) await publish(this.env, { type: 'email.dmarc.report', id: `dmarc:${r.id}`.slice(0, 120), data: { org: r.org, pass: r.pass, fail: r.fail } }, 'cue');
+    if (res.meta?.changes) await publish(this.env, { type: 'email.dmarc.report', id: `dmarc:${r.id}`.slice(0, 120), data: { org: r.org, pass: r.pass, fail: r.fail } }, 'cue', Date.now(), this.ctx, SUBSCRIBERS);
   }
 
   async queue(batch) {
@@ -160,6 +200,6 @@ export default class Cue extends WorkerEntrypoint {
 
   async scheduled(controller) {
     const hour = new Date(controller.scheduledTime).toISOString().slice(11, 13);
-    await timed('cue', 'scheduled', () => publish(this.env, { type: 'cue.clock.hourly', id: `clock:${new Date(controller.scheduledTime).toISOString().slice(0, 13)}`, data: { hour } }, 'cue'), { cron: controller.cron });
+    await timed('cue', 'scheduled', () => publish(this.env, { type: 'cue.clock.hourly', id: `clock:${new Date(controller.scheduledTime).toISOString().slice(0, 13)}`, data: { hour } }, 'cue', Date.now(), this.ctx, SUBSCRIBERS), { cron: controller.cron });
   }
 }
