@@ -8,7 +8,9 @@ export function fakeEnv({ count = 0 } = {}) {
         if (sql.startsWith('SELECT 1 FROM deliveries')) { const d = s.deliveries.get(st.args.join('|')); return d?.status === 'ok' ? {} : null; }
         return null; },
       async run() {
+        if (sql.startsWith('INSERT INTO budget')) { s.count++; return { results: [{ count: s.count }], meta: {} }; }
         if (sql.startsWith('UPDATE budget')) s.shed++;
+        if (sql.startsWith('DELETE FROM events')) s.events.delete(st.args[0]);
         if (sql.startsWith('INSERT OR IGNORE INTO events')) { if (s.events.has(st.args[0])) return { meta: { changes: 0 } }; s.events.set(st.args[0], st.args); return { meta: { changes: 1 } }; }
         if (sql.startsWith('INSERT INTO deliveries')) s.deliveries.set(`${st.args[0]}|${st.args[1]}`, { status: st.args[2], ms: st.args[5], path: st.args[6], error: st.args[3] });
         if (sql.startsWith('INSERT OR IGNORE INTO dead')) s.dead.set(st.args[0], st.args);

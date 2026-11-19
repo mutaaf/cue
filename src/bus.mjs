@@ -18,29 +18,39 @@ export const RETRY_FIRST_S = 60;
 // 60 s, 4 min, 15 min: a five-minute Apple or GitHub blip is absorbed before anything is dead-lettered.
 export const backoff = (attempts = 1) => Math.min(900, RETRY_FIRST_S * 4 ** Math.max(0, attempts - 1));
 
+const budgetStmt = (env, now) => env.DB.prepare('INSERT INTO budget (day, count) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET count = count + 1 RETURNING count').bind(day(now));
+const shedding = (v, count) => v.priority !== 'critical' && count > NORMAL_DAILY_LIMIT;
+
 export async function publish(env, input, source, now = Date.now(), ctx = null, subs = null) {
   const v = validate(input, source);
   if (!v.ok) return { ok: false, status: 400, error: v.why };
-  const row = await env.DB.prepare('INSERT INTO budget (day, count) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET count = count + 1 RETURNING count').bind(day(now)).first();
-  if (v.priority !== 'critical' && row.count > NORMAL_DAILY_LIMIT) {
-    await env.DB.prepare('UPDATE budget SET shed = shed + 1 WHERE day = ?').bind(day(now)).run();
-    return { ok: true, shed: true };
-  }
   // A CloudEvents 1.0 envelope (cloudevents.io), so any tool that speaks the standard can read the log.
   // priority, delay and v are extension attributes.
   const event = { specversion: '1.0', id: input.id ? String(input.id) : crypto.randomUUID(), v: 1, type: input.type, source, time: new Date(now).toISOString(), datacontenttype: 'application/json', priority: v.priority, ...(v.delay ? { delay: v.delay } : {}), data: input.data };
   if (ctx?.waitUntil && subs && !v.delay) {
     try {
-      const [ins] = await store(env, event, now);
+      // One round trip to D1 before delivery starts: count it against the day, log it (and its echo), in one
+      // transaction. Crons and queues can run far from D1, where every extra round trip costs a few hundred ms.
+      const [budget, ins] = await env.DB.batch([budgetStmt(env, now), ...storeStmts(env, event, now)]);
+      const fresh = ins?.meta?.changes !== 0;
+      if (shedding(v, budget?.results?.[0]?.count)) {
+        await env.DB.batch([env.DB.prepare('UPDATE budget SET shed = shed + 1 WHERE day = ?').bind(day(now)), ...(fresh ? [env.DB.prepare('DELETE FROM events WHERE id = ?').bind(event.id)] : [])]);
+        return { ok: true, shed: true };
+      }
       // A second copy of an id (two watchers, one change) is logged as an echo but not delivered again: the
       // first copy owns delivery, and its retries and the sweep cover it if it fails.
-      if (ins?.meta?.changes === 0) return { ok: true, id: event.id, path: 'duplicate' };
-      ctx.waitUntil(dispatch(env, event, subs).catch((e) => log('cue', 'dispatch', { type: event.type, ok: false, error: String(e?.message ?? e).slice(0, 200) })));
+      if (!fresh) return { ok: true, id: event.id, path: 'duplicate' };
+      ctx.waitUntil(dispatch(env, event, subs, INLINE_TIMEOUT_MS, true).catch((e) => log('cue', 'dispatch', { type: event.type, ok: false, error: String(e?.message ?? e).slice(0, 200) })));
       return { ok: true, id: event.id, path: 'inline' };
     } catch (e) {
-      // The log didn't take it: hand the event to the queue as before, which writes it on arrival.
+      // The log didn't take it (the batch is one transaction, so nothing was counted): use the queue lane.
       log('cue', 'store', { type: event.type, ok: false, fallback: 'queue', error: String(e?.message ?? e).slice(0, 200) });
     }
+  }
+  const row = await budgetStmt(env, now).first();
+  if (shedding(v, row.count)) {
+    await env.DB.prepare('UPDATE budget SET shed = shed + 1 WHERE day = ?').bind(day(now)).run();
+    return { ok: true, shed: true };
   }
   await env.EVENTS.send(event, v.delay ? { contentType: 'json', delaySeconds: v.delay } : { contentType: 'json' });
   return { ok: true, id: event.id, path: 'queue' };
@@ -52,17 +62,18 @@ export function subscribersFor(event, subs) {
   return Array.isArray(event.only) ? want.filter((s) => event.only.includes(s.name)) : want;
 }
 
-function store(env, e, now) {
+function storeStmts(env, e, now) {
   const at = new Date(now).toISOString();
   const stmts = [env.DB.prepare('INSERT OR IGNORE INTO events (id, type, source, time, priority, data, received) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(e.id, e.type, e.source, e.time, e.priority, JSON.stringify(e.data), at)];
   if (e.type === 'app.review.changed') stmts.push(env.DB.prepare('INSERT OR IGNORE INTO echoes (id, source, at) VALUES (?, ?, ?)').bind(e.id, e.source, at));
-  return env.DB.batch(stmts);
+  return stmts;
 }
+const store = (env, e, now) => env.DB.batch(storeStmts(env, e, now));
 
 // The inline lane: deliver now; what failed goes to the queue with backoff, long jobs go to the queue at once.
-export async function dispatch(env, e, subs, timeoutMs = INLINE_TIMEOUT_MS) {
+export async function dispatch(env, e, subs, timeoutMs = INLINE_TIMEOUT_MS, fresh = false) {
   const want = subscribersFor(e, subs);
-  const { failed } = await deliver(env, e, want.filter((s) => !s.queue), 'inline', timeoutMs);
+  const { failed } = await deliver(env, e, want.filter((s) => !s.queue), 'inline', timeoutMs, fresh);
   const slow = want.filter((s) => s.queue).map((s) => s.name);
   const sends = [];
   if (slow.length) sends.push(env.EVENTS.send({ ...e, via: 'deferred', only: slow }, { contentType: 'json' }));
@@ -78,9 +89,10 @@ function timeout(p, ms, name) {
 
 // Run every subscriber that hasn't already succeeded for this id, in parallel, each under a time limit, and
 // record all of them in one write.
-export async function deliver(env, e, subs, path, timeoutMs) {
+// A fresh id (this invocation just logged it) can't have a delivery yet, so it skips the lookup.
+export async function deliver(env, e, subs, path, timeoutMs, fresh = false) {
   if (!subs.length) return { failed: [] };
-  const done = new Set(((await env.DB.prepare("SELECT subscriber FROM deliveries WHERE event_id = ? AND status = 'ok'").bind(e.id).all()).results ?? []).map((r) => r.subscriber));
+  const done = fresh ? new Set() : new Set(((await env.DB.prepare("SELECT subscriber FROM deliveries WHERE event_id = ? AND status = 'ok'").bind(e.id).all()).results ?? []).map((r) => r.subscriber));
   const todo = subs.filter((s) => !done.has(s.name));
   if (!todo.length) return { failed: [] };
   const results = await Promise.all(todo.map(async (s) => {
@@ -94,7 +106,7 @@ export async function deliver(env, e, subs, path, timeoutMs) {
     }
   }));
   await env.DB.batch(results.map((r) => recordStmt(env, e.id, r.name, r.ok ? 'ok' : 'failed', r.error ?? null, r.at, r.ok ? r.ms : null, path)));
-  for (const r of results) log('cue', 'deliver', { subscriber: r.name, type: e.type, path, ms: r.run, ok: r.ok });
+  for (const r of results) log('cue', 'deliver', { subscriber: r.name, type: e.type, path, ms: r.run, latency: r.ok ? r.ms : null, ok: r.ok });
   return { failed: results.filter((r) => !r.ok).map((r) => r.name) };
 }
 
