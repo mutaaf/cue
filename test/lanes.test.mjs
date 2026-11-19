@@ -51,6 +51,17 @@ test('a queued message runs only the subscribers it names', async () => {
   await consume({ messages: [m] }, e, [sub('a', async () => { a++; }), sub('b', async () => { b++; })]);
   assert.equal(a, 0); assert.equal(b, 1); assert.equal(m.acked, true); assert.equal(e.s.deliveries.get('q|b').path, 'retry');
 });
+test('the inline lane reaches D1 once before delivering a fresh event', async () => {
+  const e = fakeEnv(), c = ctx(); let batches = 0, reads = 0; const batch = e.DB.batch, prepare = e.DB.prepare;
+  e.DB.batch = (x) => { batches++; return batch(x); }; e.DB.prepare = (sql) => { const st = prepare(sql); if (sql.startsWith('SELECT')) reads++; return st; };
+  await publish(e, ping, 'x', Date.now(), c, [sub('s')]);
+  assert.equal(batches, 1); await settle(c); assert.equal(reads, 0); assert.equal(batches, 2);
+});
+test('a normal event past the daily limit is shed on the inline lane too, and leaves no log row', async () => {
+  const e = fakeEnv({ count: 2400 }), c = ctx(); let n = 0;
+  const r = await publish(e, ping, 'x', Date.now(), c, [sub('s', async () => { n++; })]); await settle(c);
+  assert.equal(r.shed, true); assert.equal(n, 0); assert.equal(e.s.events.size, 0); assert.equal(e.s.shed, 1);
+});
 test('retries back off: one minute, four, then fifteen', () => { assert.equal(backoff(1), 60); assert.equal(backoff(2), 240); assert.equal(backoff(3), 900); assert.equal(backoff(9), 900); });
 test('a failed queued message retries with that backoff', async () => {
   const e = fakeEnv(), m = msg({ id: 'f', type: 'ops.test.ping', time: 't', data: {} }, 2); let delay;
