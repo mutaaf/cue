@@ -49,3 +49,10 @@ test('stats counts paired phones and nothing else about them', async () => {
   assert.deepEqual(s.pager, { devices: 2 });
   assert.ok(!JSON.stringify(s).includes('endpoint'));
 });
+test('stats summarises the last 24 hours by lane and subscriber, with a real maximum', async () => {
+  const rows = [{ subscriber: 'a', status: 'ok', ms: 100, path: 'inline' }, { subscriber: 'a', status: 'ok', ms: 900, path: 'inline' }, { subscriber: 'b', status: 'failed', ms: null, path: 'retry' }];
+  const env = { DB: { prepare: (sql) => { const st = { bind: () => st, all: async () => ({ results: sql.startsWith('SELECT subscriber, status') ? rows : [] }), first: async () => null }; return st; } } };
+  const s = await stats(env);
+  assert.equal(s.latency.last24h.max, 900); assert.equal(s.latency.last24h.n, 2); assert.equal(s.latency.byPath.inline.p50, 900);
+  assert.deepEqual(s.subscribers.map((x) => [x.name, x.ok, x.failed]), [['a', 2, 0], ['b', 0, 1]]);
+});
